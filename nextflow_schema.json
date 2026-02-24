@@ -1,57 +1,29 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema",
   "title": "Generic Metabarcoding Workflow",
-  "description": "Metabarcoding Analyse mit flexibler Datenbank-Auswahl",
   "type": "object",
-  "definitions": {
-    "input_files": {
-      "title": "Input & Datenbank",
-      "type": "object",
-      "fa_icon": "fas fa-database",
-      "properties": {
-        "reads": {
-          "type": "string",
-          "format": "directory-path",
-          "title": "Reads Ordner",
-          "description": "Ordner mit FastQ-Dateien"
-        },
-        "db_choice": {
-          "type": "string",
-          "title": "Referenzdatenbank",
-          "description": "Wähle die Ziel-Datenbank für das Alignment.",
-          "enum": [
-            "oomycetes_cox",
-            "fusarium_tef",
-            "custom_fasta"
-          ],
-          "default": "oomycetes_cox"
-        },
-        "custom_db_path": {
-          "type": "string",
-          "title": "Eigener Datenbank-Pfad",
-          "description": "Nur auszufüllen, wenn oben 'custom_fasta' gewählt wurde.",
-          "hidden": true
-        },
-        "out_dir": {
-          "type": "string",
-          "title": "Output Verzeichnis",
-          "default": "output"
-        }
-      },
-      "required": ["reads", "db_choice"]
+  "properties": {
+    "reads": { 
+      "type": "string", 
+      "title": "Reads Ordner" 
     },
-    "taxonomy_filter": {
-      "title": "Spezies-Filter (Scharfstellen)",
-      "type": "object",
-      "fa_icon": "fas fa-microscope",
-      "properties": {
-        "min_identity": { "type": "number", "title": "Min. Identität (%)", "default": 90 },
-        "min_coverage": { "type": "number", "title": "Min. Abdeckung (%)", "default": 80 }
-      }
-    }
+    "db_choice": { 
+      "type": "string", 
+      "title": "Referenzdatenbank",
+      "enum": ["oomycetes_cox", "fusarium_tef", "custom_fasta"], 
+      "default": "oomycetes_cox" 
+    },
+    "custom_db_path": { 
+      "type": "string", 
+      "title": "Eigener Datenbank-Pfad (Optional)" 
+    },
+    "out_dir": { 
+      "type": "string", 
+      "title": "Output Verzeichnis", 
+      "default": "output" 
+    },
+    "min_identity": { "type": "number", "default": 90 },
+    "min_coverage": { "type": "number", "default": 80 }
   },
-  "allOf": [
-    { "$ref": "#/definitions/input_files" },
-    { "$ref": "#/definitions/taxonomy_filter" }
-  ]
+  "required": ["reads", "db_choice"]
 }
