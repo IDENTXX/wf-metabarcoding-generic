@@ -1,0 +1,11 @@
+{
+  "pipeline_name": "Generic Metabarcoding",
+  "files": [
+    {
+      "name": "Report",
+      "description": "Metabarcoding Analyse Report",
+      "file": "wf-metabarcoding-report.html",
+      "type": "html"
+    }
+  ]
+}
