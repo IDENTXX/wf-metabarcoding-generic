@@ -1,64 +1,54 @@
 nextflow.enable.dsl=2
 
-/*
-  Haupt-Workflow: GENERIC METABARCODING
-  - Dynamisches DB-Routing über UI-Dropdown
-  - Generischer NCBI Taxonomy Parser
-*/
-
 def timestamp = new java.util.Date().format( 'yyyy-MM-dd_HH-mm' )
 def archive_dir = "Metabarcoding_Run_${timestamp}"
 
 workflow {
-  // --- 1. DATENBANK ROUTING ---
-  def resolved_db_path = null
-  
-  if (params.db_choice == 'custom_fasta') {
-      if (!params.custom_db_path) { error "Abbruch: 'custom_fasta' gewählt, aber kein Pfad angegeben!" }
-      resolved_db_path = params.custom_db_path
-  } else {
-      resolved_db_path = params.databases[params.db_choice]
-      if (!resolved_db_path) { error "Abbruch: Unbekannte Datenbank '${params.db_choice}'" }
+  // Datenbank-Katalog ist jetzt intern und absturzsicher
+  def db_catalog = [
+    'oomycetes_cox' : '/mnt/d/Epi2Me_Datenbanken/oomycetes_cox_ref.fasta',
+    'fusarium_tef'  : '/mnt/d/Epi2Me_Datenbanken/fusarium_TEF_ref.fasta'
+  ]
+
+  def resolved_db_path = params.custom_db_path
+  if (params.db_choice != 'custom_fasta') {
+      resolved_db_path = db_catalog[params.db_choice]
   }
 
   if( !params.reads ) {
     log.info "Bitte Reads angeben."
     return
   }
-  
+
   log.info "================================================="
   log.info " GENERIC METABARCODING PIPELINE"
   log.info " Ausgewählte DB:  ${params.db_choice}"
   log.info " Effektiver Pfad: ${resolved_db_path}"
-  log.info " Archiv Output:   ${archive_dir}"
   log.info "================================================="
 
-  Channel
-    .fromPath("${params.reads}/*/*.fastq.gz", checkIfExists: true)
+  ch_samples = Channel
+    .fromPath("${params.reads}/*/*.fastq.gz")
     .map { f -> tuple(f.parent.name, f) }
     .groupTuple()
     .map { sample, files -> tuple(sample, files.sort()) }
-    .set { ch_samples }
 
   merged    = MERGE_FASTQ(ch_samples)
   fasta     = FASTQ_TO_FASTA(merged)
   clustered = CLUSTER_VSEARCH(fasta)
   kept      = FILTER_CLUSTERS(clustered)
-  
-  // Nutze den aufgelösten Datenbank-Pfad
-  ref_fa    = Channel.value( file(resolved_db_path, checkIfExists: true) )
+
+  // Sicherer Aufruf ohne Absturz beim UI-Laden
+  ref_fa    = Channel.fromPath(resolved_db_path).first()
   dbdir_ch  = MAKEBLASTDB(ref_fa)
-  
+
   kept_with_db = kept.combine(dbdir_ch)
   blasted      = BLASTN(kept_with_db)
   tax          = JOIN_COUNTS_BLAST(blasted)
-  
-  tax_tables_list = tax.map { sample, taxfile -> taxfile }.collect() 
+
+  tax_tables_list = tax.map { sample, taxfile -> taxfile }.collect()
   summary = AGGREGATE_RESULTS(tax_tables_list)
   REPORT_HTML(summary)
 }
-
-// --- PROZESSE ---
 
 process MERGE_FASTQ {
   tag "$sample"
@@ -96,7 +86,6 @@ process FILTER_CLUSTERS {
 }
 
 process MAKEBLASTDB {
-  container "ncbi/blast:2.16.0"
   input: path(db_fasta)
   output: path("blastdb")
   script:
@@ -109,7 +98,6 @@ process MAKEBLASTDB {
 
 process BLASTN {
   tag "$sample"
-  container "ncbi/blast:2.16.0"
   input: tuple val(sample), path(counts), path(centroids_fa), path(dbdir)
   output: tuple val(sample), path(counts), path("${sample}.blast.tsv")
   script:
@@ -137,7 +125,7 @@ try:
             if not row: continue
             qid = row[0]
             if qid in hits: continue
-            if float(row[2]) < min_id or float(row[7]) < min_cov: continue 
+            if float(row[2]) < min_id or float(row[7]) < min_cov: continue
             stitle = row[8] if len(row) > 8 else 'NA'
             hits[qid] = {'sseqid': row[1], 'pident': row[2], 'qcovs': row[7], 'stitle': stitle}
 except Exception: pass
