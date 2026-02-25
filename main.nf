@@ -1,13 +1,12 @@
 nextflow.enable.dsl=2
 
 def timestamp = new java.util.Date().format( 'yyyy-MM-dd_HH-mm' )
-def archive_dir = "Metabarcoding_Run_${timestamp}"
 
 workflow {
-  // Datenbank-Katalog ist jetzt intern und absturzsicher
   def db_catalog = [
     'oomycetes_cox' : '/mnt/d/Epi2Me_Datenbanken/oomycetes_cox_ref.fasta',
-    'fusarium_tef'  : '/mnt/d/Epi2Me_Datenbanken/fusarium_TEF_ref.fasta'
+    'fusarium_tef'  : '/mnt/d/Epi2Me_Datenbanken/fusarium_TEF_ref.fasta',
+    'oomycetes_its' : '/mnt/d/Epi2Me_Datenbanken/oomycetes_its_ref.fasta'
   ]
 
   def resolved_db_path = params.custom_db_path
@@ -20,12 +19,6 @@ workflow {
     return
   }
 
-  log.info "================================================="
-  log.info " GENERIC METABARCODING PIPELINE"
-  log.info " Ausgewählte DB:  ${params.db_choice}"
-  log.info " Effektiver Pfad: ${resolved_db_path}"
-  log.info "================================================="
-
   ch_samples = Channel
     .fromPath("${params.reads}/*/*.fastq.gz")
     .map { f -> tuple(f.parent.name, f) }
@@ -37,7 +30,6 @@ workflow {
   clustered = CLUSTER_VSEARCH(fasta)
   kept      = FILTER_CLUSTERS(clustered)
 
-  // Sicherer Aufruf ohne Absturz beim UI-Laden
   ref_fa    = Channel.fromPath(resolved_db_path).first()
   dbdir_ch  = MAKEBLASTDB(ref_fa)
 
@@ -52,8 +44,8 @@ workflow {
 
 process MERGE_FASTQ {
   tag "$sample"
+  container = null 
   publishDir "${params.out_dir}/per_sample/${sample}/reads", mode: 'copy', overwrite: true
-  publishDir "${archive_dir}/per_sample/${sample}/reads", mode: 'copy'
   input: tuple val(sample), path(reads)
   output: tuple val(sample), path("${sample}.fastq.gz")
   script: "cat ${reads.join(' ')} > ${sample}.fastq.gz"
@@ -75,13 +67,14 @@ process CLUSTER_VSEARCH {
 
 process FILTER_CLUSTERS {
   tag "$sample"
+  container = null 
   input: tuple val(sample), path(centroids), path(uc)
   output: tuple val(sample), path("${sample}.cluster_counts.tsv"), path("${sample}.centroids.kept.fasta")
   script:
   """
   awk -F'\\t' 'BEGIN{OFS="\\t"} \$1=="S"{cl=\$2; id=\$9; c[cl]=id; n[id]=1} \$1=="H"{n[c[\$2]]++} END{for(i in n) print i,n[i]}' ${uc} | sort -k2,2nr > ${sample}.cluster_counts.tsv
   awk '\$2>=1{print \$1}' ${sample}.cluster_counts.tsv > keep.txt
-  if [ -s keep.txt ]; then seqkit grep -f keep.txt ${centroids} > ${sample}.centroids.kept.fasta; else touch ${sample}.centroids.kept.fasta; fi
+  if [ -s keep.txt ]; then cp ${centroids} ${sample}.centroids.kept.fasta; else touch ${sample}.centroids.kept.fasta; fi
   """
 }
 
@@ -109,6 +102,7 @@ process BLASTN {
 
 process JOIN_COUNTS_BLAST {
   tag "$sample"
+  container = null
   input: tuple val(sample), path(counts_tsv), path(blast_tsv)
   output: tuple val(sample), path("${sample}.taxonomy.tsv")
   script:
@@ -143,8 +137,8 @@ PY
 }
 
 process AGGREGATE_RESULTS {
+  container = null
   publishDir "${params.out_dir}/summary", mode: 'copy', overwrite: true
-  publishDir "${archive_dir}/summary", mode: 'copy'
   input: path(tables)
   output: tuple path("wf-metagenomics-counts-species.csv"), path("abundance_matrix.csv")
   script:
@@ -164,12 +158,22 @@ data, all_samples, all_species = {}, set(), set()
 
 def clean_name(raw_title):
     if "Unclassified" in raw_title: return "Unclassified"
-    match_fsp = re.search(r'^([A-Z][a-z]+\\s+\\S+\\s+f\\.\\s*sp\\.\\s+[\\w\\.-]+)', raw_title)
-    if match_fsp: return match_fsp.group(1).strip()
-    match_binom = re.search(r'^([A-Z][a-z]+\\s+[a-z0-9\\-]+)', raw_title)
-    if match_binom: return match_binom.group(1).strip()
+    raw_title = raw_title.replace(',', ' ').replace(';', ' ').replace('UNVERIFIED:', '').strip()
+    
+    # Accession am Anfang aggressiver entfernen (JQ429332.1 etc.)
     parts = raw_title.split()
-    return f"{parts[0]} {parts[1]}" if len(parts) >= 2 else raw_title
+    while parts and (any(char.isdigit() for char in parts[0]) or parts[0].count('.') > 0):
+        parts.pop(0)
+    
+    if not parts: return "Unknown"
+    cleaned_title = " ".join(parts)
+    
+    # Finaler Regex für lycopersici und Varietäten
+    match = re.search(r'^([A-Z][a-z]+\\s+[a-z0-9\\-]+(\\s+(f\\.\\s*sp\\.|f\\.sp\\.|var\\.|subsp\\.|f\\.)\\s+[a-z0-9\\-]+)?)', cleaned_title)
+    
+    if match:
+        return match.group(1).strip()
+    return f"{parts[0]} {parts[1]}" if len(parts) >= 2 else parts[0]
 
 with open('raw_combined.tsv', 'r') as f:
     for row in csv.DictReader(f, delimiter='\\t'):
@@ -182,19 +186,14 @@ with open('raw_combined.tsv', 'r') as f:
 
 sorted_samples = sorted(list(all_samples))
 sorted_species = sorted(list(all_species))
-if "Unclassified" in sorted_species:
-    sorted_species.remove("Unclassified")
-    sorted_species.append("Unclassified")
 
 with open('wf-metagenomics-counts-species.csv', 'w') as out:
     header = ['species'] + sorted_samples + ['total', 'superkingdom', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'tax']
     out.write(','.join(header) + '\\n')
     for sp in sorted_species:
         total = sum(data[sp].values())
-        row = [sp] + [str(data[sp].get(sa, 0.0)) for sa in sorted_samples] + [str(float(total))]
         genus = sp.split()[0] if sp != "Unclassified" else "NA"
-        sk = k = p = c = o = fa = "NA"
-        row.extend([sk, k, p, c, o, fa, genus, f"{sk};{k};{p};{c};{o};{fa};{genus};{sp}"])
+        row = [sp] + [str(data[sp].get(sa, 0)) for sa in sorted_samples] + [str(total), "NA","NA","NA","NA","NA","NA", genus, f"NA;NA;NA;NA;NA;NA;{genus};{sp}"]
         out.write(','.join(row) + '\\n')
 
 with open('abundance_matrix.csv', 'w') as out:
@@ -206,8 +205,8 @@ PY
 }
 
 process REPORT_HTML {
+  container = null
   publishDir "${params.out_dir}", mode: 'copy', overwrite: true
-  publishDir "${archive_dir}", mode: 'copy'
   input: tuple path(metagenomics_csv), path(matrix_csv)
   output: path("wf-metabarcoding-report.html")
   script:
